@@ -11,8 +11,20 @@
 
 <!-- screenshot: 在此处添加平台 Web「项目 → 测试 → 执行记录」页面截图 -->
 
+## 相关仓库
+
+| 仓库 | 说明 |
+| --- | --- |
+| [byte-code](https://github.com/cicbyte/byte-code) | 平台本体（Go + Vue3）：执行记录 / 测试管理 / 任务流 / Agent 准入——本插件上报的目标 |
+| [byte-code-cli](https://github.com/cicbyte/byte-code-cli) | `bcode` CLI：agent 任务工作流；`bcode test --upload` 补传本插件 `--bcode-dump` 离线产物、`--cases --pull\|--push` 用例 YAML 双向同步 |
+| [byte-code-pytest](https://github.com/cicbyte/byte-code-pytest) | 本仓库：pytest ↔ 平台桥 |
+
+三仓分工：pytest（本插件）与任意 junit 生态（经 CLI）执行测试 → 平台落执行记录 → 失败一键转缺陷任务 → agent 经 CLI 认领修复 → 重跑验证闭环。
+
+
 ## 目录
 
+- [相关仓库](#相关仓库)
 - [功能特性](#功能特性)
 - [快速开始](#快速开始)
 - [用例映射（三层）](#用例映射三层)

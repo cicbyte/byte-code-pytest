@@ -11,8 +11,20 @@ English | [简体中文](README.md)
 
 <!-- screenshot: add a screenshot of the platform web page "Project → Tests → Test Runs" here -->
 
+## Related Repositories
+
+| Repository | Description |
+| --- | --- |
+| [byte-code](https://github.com/cicbyte/byte-code) | The platform itself (Go + Vue3): run records, test management, task flow, agent admission — where this plugin reports to |
+| [byte-code-cli](https://github.com/cicbyte/byte-code-cli) | The `bcode` CLI: agent task workflow; `bcode test --upload` back-fills this plugin's `--bcode-dump` artifacts, `--cases --pull\|--push` syncs test cases as YAML |
+| [byte-code-pytest](https://github.com/cicbyte/byte-code-pytest) | This repository: the pytest ↔ platform bridge |
+
+How the three fit together: pytest (this plugin) and any junit ecosystem (via the CLI) execute tests → the platform records runs → failures convert to bug tasks in one click → agents claim and fix via the CLI → re-run closes the loop.
+
+
 ## Table of Contents
 
+- [Related Repositories](#related-repositories)
 - [Features](#features)
 - [Quick Start](#quick-start)
 - [Test-Case Mapping (Three Tiers)](#test-case-mapping-three-tiers)
