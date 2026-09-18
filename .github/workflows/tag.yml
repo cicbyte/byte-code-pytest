@@ -1,0 +1,79 @@
+name: Tag Release
+
+# 一键发版入口（对齐 byte-code 平台仓库的发版触发链）：版本号由 git-cliff
+# 按提交语义自动推导（feat→minor，仅 fix/chore→patch），也支持显式指定。
+# ⚠ GITHUB_TOKEN 推送的 tag 不会触发 on:push:tags 工作流（GitHub 防递归），
+# 因此打完 tag 后用 gh 显式 dispatch release.yml，不依赖 tag push 触发。
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号：留空=自动推导；或填 patch/minor/major 强制档位；或完整版本号如 0.1.0（不带 v）'
+        required: false
+        default: ''
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write  # 显式 dispatch release.yml 必需
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # cliff 推导需要全历史与全部 tag
+          persist-credentials: true
+
+      - name: Install git-cliff
+        uses: taiki-e/install-action@v2
+        with:
+          tool: git-cliff
+
+      - name: Resolve next version
+        id: ver
+        run: |
+          INPUT="${{ github.event.inputs.version }}"
+          if [ -z "$INPUT" ]; then
+            V=$(git-cliff --bumped-version 2>/dev/null | tr -d '[:space:]')
+          elif echo "$INPUT" | grep -qE '^(patch|minor|major)$'; then
+            V=$(git-cliff --bump "$INPUT" --bumped-version | tr -d '[:space:]')
+          else
+            V="$INPUT"
+          fi
+          # 部分版本 git-cliff 输出带 v 前缀，统一剥掉防拼出 vv*
+          V=${V#v}
+          if [ -z "$V" ]; then
+            echo "无法确定版本号（可能是首个 tag，请显式填写 version）" && exit 1
+          fi
+          if git rev-parse "v$V" >/dev/null 2>&1; then
+            echo "tag v$V 已存在，拒绝重复发版" && exit 1
+          fi
+          echo "VERSION=$V" >> $GITHUB_OUTPUT
+          echo "下一版本：v$V"
+
+      # 与 byte-code（ldflags 构建期注入）不同：本项目版本唯一来源是
+      # __init__.py 的 __version__，随 CHANGELOG 一起 bump 入库
+      - name: Bump version & changelog
+        run: |
+          V="${{ steps.ver.outputs.VERSION }}"
+          sed -i "s/__version__ = \".*\"/__version__ = \"$V\"/" src/byte_code_pytest/__init__.py
+          git-cliff -o CHANGELOG.md
+          git config user.name "release-bot"
+          git config user.email "release-bot@users.noreply.github.com"
+          git add CHANGELOG.md src/byte_code_pytest/__init__.py
+          git commit -m "chore(release): bump version to $V"
+          git push
+
+      - name: Create and push tag
+        run: |
+          git tag -a "v${{ steps.ver.outputs.VERSION }}" -m "release v${{ steps.ver.outputs.VERSION }}"
+          git push origin "v${{ steps.ver.outputs.VERSION }}"
+
+      # GITHUB_TOKEN 的 tag push 不触发下游工作流，显式 dispatch 接续发版链
+      - name: Trigger Release workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sleep 5  # 等 bump/tag 推送传播
+          gh workflow run release.yml --ref "${{ github.ref_name }}" -f tag="v${{ steps.ver.outputs.VERSION }}"

@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "byte-code-pytest"
+dynamic = ["version"]
+description = "pytest ↔ ByteCode 平台桥：执行结果批量上报 test_runs，三层用例映射"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [
+    { name = "cicbyte" }
+]
+keywords = ["pytest", "testing", "reporting", "ci", "bytecode"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: Pytest",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Testing",
+    "Topic :: Software Development :: Quality Assurance",
+]
+dependencies = []  # 纯标准库实现，CI 环境零额外依赖
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "ruff>=0.4.0",
+    "build>=1.0.0",
+    "twine>=5.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/cicbyte/byte-code-pytest"
+Repository = "https://github.com/cicbyte/byte-code-pytest"
+Issues = "https://github.com/cicbyte/byte-code-pytest/issues"
+Changelog = "https://github.com/cicbyte/byte-code-pytest/blob/master/CHANGELOG.md"
+
+[project.entry-points.pytest11]
+byte_code = "byte_code_pytest.plugin"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.dynamic]
+# 版本唯一来源：__init__.py 的 __version__（发版只改这一处）
+version = { attr = "byte_code_pytest.__version__" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py38"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+# E501 由 line-length 提示；UP032 豁免以保持全库 .format 风格统一
+ignore = ["E501", "UP032"]

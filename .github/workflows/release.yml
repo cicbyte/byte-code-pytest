@@ -1,0 +1,88 @@
+name: Build & Release
+
+# 发版链第二段（对齐 byte-code）：正常由 Tag Release 工作流显式 dispatch
+# （GITHUB_TOKEN 推送的 tag 不触发 on:push:tags，GitHub 防递归）；保留
+# push:tags 触发以覆盖人工手推 tag 的场景。PyPI 侧需一次性配置 Trusted
+# Publisher（本仓库 + release.yml 工作流 + pypi 环境），之后发版无需 token。
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要发布的 tag（v 前缀），如 v0.1.0'
+        required: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 安装
+        run: pip install -e .[dev]
+      - name: 校验 tag 与包版本一致
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          PKG_VER=$(python -c "import byte_code_pytest; print(byte_code_pytest.__version__)")
+          echo "tag=${TAG} 包版本=${PKG_VER}"
+          [ "v${PKG_VER}" = "${TAG}" ]
+      - name: 构建与检查
+        run: |
+          python -m build
+          twine check dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish-pypi:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write  # PyPI trusted publishing (OIDC)
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  github-release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # cliff 生成发版说明需要全历史与 tag
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate changelog
+        uses: orhun/git-cliff-action@v4
+        id: cliff
+        with:
+          config: cliff.toml
+          args: --latest --strip header
+        env:
+          # 多行内容经文件传给 release 更稳；此时 outputs.changelog 是文件路径
+          OUTPUT: CHANGELOG-body.md
+          GITHUB_REPO: ${{ github.repository }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          # dispatch 模式（ref=分支名）必须显式指定 tag
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          files: dist/*
+          body_path: CHANGELOG-body.md

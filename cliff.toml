@@ -1,0 +1,45 @@
+# git-cliff 配置：从 Conventional Commits 生成 CHANGELOG
+# 用法：git cliff -o CHANGELOG.md（打 tag 前执行，见 README「发版」）
+
+[changelog]
+header = """\
+# Changelog
+
+本项目的所有显著变更记录在此文件中。提交信息遵循
+[Conventional Commits](https://www.conventionalcommits.org/zh-hans/)。
+"""
+trim = true
+
+[git]
+conventional_commits = true
+filter_unconventional = true
+tag_pattern = "v[0-9].*"
+sort_commits = "oldest"
+
+[[git.commit_parsers]]
+message = "^feat"
+group = "新增"
+
+[[git.commit_parsers]]
+message = "^fix"
+group = "修复"
+
+[[git.commit_parsers]]
+message = "^perf"
+group = "性能"
+
+[[git.commit_parsers]]
+message = "^doc"
+group = "文档"
+
+[[git.commit_parsers]]
+message = "^refactor"
+group = "重构"
+
+[[git.commit_parsers]]
+message = "^test"
+group = "测试"
+
+[[git.commit_parsers]]
+message = "^chore"
+group = "杂务"
