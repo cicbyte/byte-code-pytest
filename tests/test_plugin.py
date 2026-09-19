@@ -155,6 +155,7 @@ class StubPlatform:
                         "entityId": int(fields.get("entityId", "0")),
                         "filename": fname,
                         "size": len(content),
+                        "content": content.decode("utf-8", "replace"),
                     })
                     self._send(200, {"id": 1000 + len(stub.uploads)})
                     return
@@ -453,7 +454,7 @@ def test_attachments_uploaded_after_run(pytester, stub):
         "--bcode", "--bcode-url", stub.url,
         "--bcode-key", "bc_test_key", "--bcode-project", "1",
     )
-    result.stdout.fnmatch_lines(["*已回传 2 个失败/错误用例附件*"])
+    result.stdout.fnmatch_lines(["*已回传 2 个用例附件*"])
     # 详情接口按 externalKey 顺序分配行 id：test_shot 是第一条 → 900
     assert len(stub.uploads) == 2
     assert {u["entityType"] for u in stub.uploads} == {"test_run_case"}
@@ -462,6 +463,38 @@ def test_attachments_uploaded_after_run(pytester, stub):
         "manual.log", "test_suite.py__test_shot-1.png"
     }
     assert next(u for u in stub.uploads if u["filename"].endswith(".png"))["size"] == 10
+
+
+def test_code_snapshot_scopes(pytester, stub):
+    """--bcode-code 三态：默认 off 不上传；fail 仅失败/错误；all 全部用例"""
+    pytester.makepyfile(test_suite="""
+        def test_ok():
+            assert True
+
+        def test_bad():
+            assert 1 == 2
+    """)
+    base = ("--bcode", "--bcode-url", stub.url,
+            "--bcode-key", "bc_test_key", "--bcode-project", "1")
+
+    r0 = pytester.runpytest_subprocess(*base)
+    r0.stdout.no_fnmatch_line("*已回传*")
+    assert stub.uploads == []
+
+    stub.uploads.clear()
+    r1 = pytester.runpytest_subprocess(*base, "--bcode-code", "fail")
+    r1.stdout.fnmatch_lines(["*已回传 1 个用例附件*"])
+    assert len(stub.uploads) == 1
+    up = stub.uploads[0]
+    assert up["filename"] == "test_suite.py__test_bad.py.txt"
+    assert "def test_bad():" in up["content"]
+
+    stub.uploads.clear()
+    r2 = pytester.runpytest_subprocess(*base, "--bcode-code", "all")
+    r2.stdout.fnmatch_lines(["*已回传 2 个用例附件*"])
+    assert {u["filename"] for u in stub.uploads} == {
+        "test_suite.py__test_bad.py.txt", "test_suite.py__test_ok.py.txt"
+    }
 
 
 def test_ci_output_annotations_and_summary(pytester, stub):

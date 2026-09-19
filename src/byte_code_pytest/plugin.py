@@ -19,6 +19,7 @@ skip_report / --bcode-exclude 排除不上报。
 import fnmatch
 import glob
 import hashlib
+import inspect
 import json
 import os
 import re
@@ -78,6 +79,10 @@ def pytest_addoption(parser):
     group.addoption("--bcode-screenshots", action="store", default="screenshots", metavar="DIR",
                     help="失败/错误用例截图目录（默认 screenshots）：文件名以净化后的 nodeid "
                          "为前缀即自动挂到对应用例行；另可用 marker attach_on_fail 显式指定")
+    group.addoption("--bcode-code", action="store", default="off",
+                    choices=["off", "fail", "all"], metavar="SCOPE",
+                    help="用例函数源码快照回传：all=全部用例 / fail=仅失败与错误 / off=关闭（默认）；"
+                         "以 .py.txt 附件挂到平台用例行，便于在平台侧排障")
     group.addoption("--bcode-strict", action="store_true", default=False,
                     help="上报失败时让 pytest 非零退出（默认仅告警）")
     group.addoption("--bcode-dump", action="store", default=None, metavar="PATH",
@@ -97,6 +102,8 @@ class _State:
         self.attach = {}       # nodeid -> [显式附件路径]（marker attach_on_fail）
         self.excluded = set()  # skip_report / --bcode-exclude 命中的 nodeid
         self.results = {}      # nodeid -> {status, duration_ms, message}
+        self.code_scope = "off"
+        self.code_source = {}  # nodeid -> 测试函数源码（--bcode-code != off 时收集期捕获）
 
 
 def pytest_configure(config):
@@ -140,6 +147,7 @@ def pytest_configure(config):
     state.strict = config.getoption("--bcode-strict")
     state.exclude_patterns = config.getoption("--bcode-exclude") or []
     state.screenshots_dir = config.getoption("--bcode-screenshots")
+    state.code_scope = config.getoption("--bcode-code")
 
 
 def pytest_sessionstart(session):
@@ -182,6 +190,13 @@ def pytest_collection_modifyitems(session, config, items):
                 meta["title"] = doc.strip().splitlines()[0].strip()
         if meta:
             state.meta[nodeid] = meta
+        # 代码快照（--bcode-code != off 时才捕获，off 保持零开销）；
+        # 动态构造/编译单元拿不到源码时静默跳过
+        if state.code_scope != "off" and nodeid not in state.code_source:
+            try:
+                state.code_source[nodeid] = inspect.getsource(item.obj)
+            except (OSError, TypeError):
+                pass
 
 
 def pytest_runtest_logreport(report):
@@ -254,7 +269,7 @@ def pytest_sessionfinish(session, exitstatus):
         try:
             count = _upload_attachments(state, run_id)
             if count:
-                print("[bcode] 已回传 {} 个失败/错误用例附件".format(count))
+                print("[bcode] 已回传 {} 个用例附件（截图/显式/代码快照）".format(count))
         except Exception as exc:  # noqa: BLE001 —— 附件是增强能力，失败不推翻上报结论
             print("[bcode] 附件回传失败: {}".format(exc))
         _warn_unmapped(state)
@@ -435,59 +450,74 @@ def _warn_unmapped(state):
         )
 
 
-# ---------------- 附件回传（失败/错误用例） ----------------
+# ---------------- 附件回传（截图 / 显式附件 / 代码快照） ----------------
+
+def _sanitize_nodeid(nodeid):
+    return re.sub(r'[\\/:*?"<>|]', "_", nodeid)
+
 
 def _screenshot_files(state, nodeid):
     """约定目录扫描：文件名以净化 nodeid 为前缀（sanitized_nodeid*.png）"""
     directory = state.screenshots_dir
     if not directory or not os.path.isdir(directory):
         return []
-    stem = re.sub(r'[\\/:*?"<>|]', "_", nodeid)
+    stem = _sanitize_nodeid(nodeid)
     return sorted(glob.glob(os.path.join(directory, stem + "*")))
+
+
+def _attachment_files(state, nodeid, failed):
+    """该用例要回传的附件 [(filename, bytes), ...]"""
+    files = []
+    if failed:
+        paths = list(state.attach.get(nodeid) or [])
+        paths += _screenshot_files(state, nodeid)
+        seen = set()
+        for path in paths:
+            key = os.path.normpath(path)
+            if key in seen or not os.path.isfile(key):
+                continue
+            seen.add(key)
+            with open(path, "rb") as fh:
+                files.append((os.path.basename(path), fh.read()))
+    want_code = state.code_scope == "all" or (
+        state.code_scope == "fail" and failed
+    )
+    if want_code:
+        source = state.code_source.get(nodeid)
+        if source:
+            files.append((_sanitize_nodeid(nodeid) + ".py.txt",
+                          source.encode("utf-8")))
+    return files
 
 
 def _upload_attachments(state, run_id):
     """run 上报后回传附件：先查详情拿 externalKey → 用例行 id 映射，再补传"""
-    targets = sorted(
-        n for n, e in state.results.items() if e["status"] in ("fail", "error")
-    )
-    if not targets:
-        return 0
     pending = {}
-    for nodeid in targets:
-        paths = list(state.attach.get(nodeid) or [])
-        paths += _screenshot_files(state, nodeid)
-        # 去重保序（marker 显式路径 + 约定目录可能重叠）
-        seen, unique = set(), []
-        for p in paths:
-            key = os.path.normpath(p)
-            if key not in seen and os.path.isfile(key):
-                seen.add(key)
-                unique.append(p)
-        if unique:
-            pending[nodeid] = unique
+    for nodeid, entry in state.results.items():
+        failed = entry["status"] in ("fail", "error")
+        files = _attachment_files(state, nodeid, failed)
+        if files:
+            pending[nodeid] = files
     if not pending:
         return 0
     detail = _request(state, "GET", "/v1/test-runs/{}".format(run_id))
     id_map = {c["externalKey"]: c["id"] for c in detail.get("cases") or []}
     count = 0
-    for nodeid, paths in pending.items():
+    for nodeid, files in pending.items():
         entity_id = id_map.get(nodeid)
         if not entity_id:
             continue
-        for path in paths:
-            _upload_attachment(state, path, entity_id)
+        for filename, content in files:
+            _upload_attachment(state, filename, content, entity_id)
             count += 1
     return count
 
 
-def _upload_attachment(state, path, entity_id):
+def _upload_attachment(state, filename, content, entity_id):
     """multipart 上传：POST /v1/attachments/upload（entityType=test_run_case）"""
     boundary = "----bcode" + hashlib.sha1(
-        "{}{}".format(time.time(), path).encode("utf-8")
+        "{}{}".format(time.time(), filename).encode("utf-8")
     ).hexdigest()
-    with open(path, "rb") as fh:
-        content = fh.read()
     parts = []
     for name, value in (("entityType", "test_run_case"), ("entityId", str(entity_id))):
         parts.append(
@@ -498,7 +528,7 @@ def _upload_attachment(state, path, entity_id):
     parts.append(
         "--{}\r\nContent-Disposition: form-data; name=\"file\"; "
         "filename=\"{}\"\r\nContent-Type: application/octet-stream\r\n\r\n".format(
-            boundary, os.path.basename(path).replace('"', "_")
+            boundary, filename.replace('"', "_")
         )
     )
     body = "".join(parts).encode("utf-8") + content + (

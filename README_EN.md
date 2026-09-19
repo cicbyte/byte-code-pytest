@@ -116,7 +116,7 @@ Failure and error tracebacks are attached to the case message (client truncates 
 - **Idempotency key**: every upload carries `sha256(git_sha + startedAt + hostname)` — network re-sends and retries hitting the same key return the existing run (response carries a `duplicate` flag), never a duplicate record
 - **Retries**: connection-level failures (refused/timeout) retry twice with exponential backoff; failures the server already accepted (including business rejections) are never retried, avoiding duplicated side effects
 - **GitHub Actions**: when `GITHUB_ACTIONS=true` is detected the plugin emits `::error` annotations for failed cases plus a `GITHUB_STEP_SUMMARY` table (pass rate / failure list / deep link to `/project/{id}/test-runs`)
-- **Failure attachments**: after the run is uploaded, attachments of failed/errored cases are attached to their platform case rows — files under `--bcode-screenshots` (default `screenshots/`) whose names start with the sanitized nodeid (`tests/test_a.py::test_x` → `tests_test_a.py__test_x*`), or files named by the marker `attach_on_fail`
+- **Failure attachments**: after the run is uploaded, attachments of failed/errored cases are attached to their platform case rows — files under `--bcode-screenshots` (default `screenshots/`) whose names start with the sanitized nodeid (`tests/test_a.py::test_x` → `tests_test_a.py__test_x*`), or files named by the marker `attach_on_fail`; optionally `--bcode-code all|fail|off` (default off) attaches the test-function source as a `.py.txt` snapshot, putting the exact code of this execution on the platform
 
 ## Configuration
 
@@ -132,6 +132,7 @@ Failure and error tracebacks are attached to the case message (client truncates 
 | `--bcode-sync` | — | Auto-create platform cases by nodeid for unmapped tests (off by default); marker metadata / docstring first lines are written on create and updated when the case exists |
 | `--bcode-exclude <pattern>` | — | fnmatch pattern to exclude cases from reporting (by nodeid, repeatable); per-case alternative: `@pytest.mark.bytecode(skip_report=True)` |
 | `--bcode-screenshots <dir>` | — | Screenshot directory for failed/errored cases (default `screenshots`): files prefixed with the sanitized nodeid are attached to the matching case row |
+| `--bcode-code <scope>` | — | Test-function source snapshot: `all` = every case / `fail` = failed and errored only / `off` = disabled (default); attached as a `.py.txt` file to the platform case row for troubleshooting without leaving the platform |
 | `--bcode-strict` | — | Non-zero pytest exit when upload fails (warn-only by default) |
 | `--bcode-dump <path>` | — | Offline mode: dump results to JSON instead of uploading (no url/key/project needed); catch up later with `bcode test --upload <path>` |
 

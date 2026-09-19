@@ -115,7 +115,7 @@ def test_ui():
 - **幂等键**：每次上报自动携带 `sha256(git_sha + startedAt + hostname)`——网络重发/重试命中同键时平台返回既有 run（响应带 `duplicate` 标记），不产生重复记录
 - **重试**：连接未建立类失败（拒连/超时）指数退避自动重试 2 次；服务端已受理的失败（含业务拒绝）不重试，避免重复副作用
 - **GitHub Actions**：检测到 `GITHUB_ACTIONS=true` 时自动输出——失败用例 `::error` 注解（PR 内联标红）+ `GITHUB_STEP_SUMMARY` 汇总表（通过率/失败清单/平台深链 `/project/{id}/test-runs`）
-- **失败附件回传**：run 上报后，把失败/错误用例的附件挂到平台用例行——`--bcode-screenshots` 目录（默认 `screenshots/`）内文件名以净化 nodeid 为前缀（`tests/test_a.py::test_x` → `tests_test_a.py__test_x*`）自动匹配，或 marker `attach_on_fail` 显式指定
+- **失败附件回传**：run 上报后，把失败/错误用例的附件挂到平台用例行——`--bcode-screenshots` 目录（默认 `screenshots/`）内文件名以净化 nodeid 为前缀（`tests/test_a.py::test_x` → `tests_test_a.py__test_x*`）自动匹配，或 marker `attach_on_fail` 显式指定；另可选 `--bcode-code all|fail|off`（默认 off）把测试函数源码快照作为 `.py.txt` 附件回传，当次执行的代码上下文直达平台
 
 ## 配置
 
@@ -131,6 +131,7 @@ def test_ui():
 | `--bcode-sync` | — | 未映射用例按 nodeid 自动建平台用例（默认关闭）；marker 元数据/docstring 首行随创建写入，已存在则回写更新 |
 | `--bcode-exclude <pattern>` | — | fnmatch 排除不上报的用例（按 nodeid，可重复）；单用例粒度用 `@pytest.mark.bytecode(skip_report=True)` |
 | `--bcode-screenshots <dir>` | — | 失败/错误用例截图目录（默认 `screenshots`）：文件名以净化 nodeid 为前缀即自动挂到对应用例行 |
+| `--bcode-code <scope>` | — | 用例函数源码快照回传：`all`=全部用例 / `fail`=仅失败与错误 / `off`=关闭（默认）；以 `.py.txt` 附件挂到平台用例行，平台侧排障免切仓库 |
 | `--bcode-strict` | — | 上报失败时 pytest 非零退出（默认仅告警） |
 | `--bcode-dump <path>` | — | 离线模式：结果落盘 JSON 而非直传（无需 url/key/project），后续 `bcode test --upload <path>` 补传 |
 
