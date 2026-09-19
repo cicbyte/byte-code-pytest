@@ -29,6 +29,7 @@ How the three fit together: pytest (this plugin) and any junit ecosystem (via th
 - [Quick Start](#quick-start)
 - [Test-Case Mapping (Three Tiers)](#test-case-mapping-three-tiers)
 - [Status Mapping](#status-mapping)
+- [Idempotency, Retries and CI Integration](#idempotency-retries-and-ci-integration)
 - [Configuration](#configuration)
 - [CI Example (GitHub Actions)](#ci-example-github-actions)
 - [Permissions](#permissions)
@@ -39,10 +40,12 @@ How the three fit together: pytest (this plugin) and any junit ecosystem (via th
 ## Features
 
 - **One-shot batch upload** — the entire session's results are uploaded at once; per-case status, duration and failure tracebacks land directly in the platform web UI
-- **Three-tier case mapping** — explicit marker / auto-sync by nodeid / record-only external_key; history stays traceable and can be re-mapped at any time
+- **Three-tier case mapping + metadata enrichment** — explicit marker / auto-sync by nodeid / record-only external_key; marker metadata and docstring first lines are written back through sync, keeping the test code as the single source of truth
+- **Idempotency & retries** — every upload carries an idempotency key, so network re-sends hit the existing run instead of duplicating it; connection-level failures retry with backoff
+- **Failure attachments** — screenshots from the conventional directory or files named by the marker are attached to the platform case rows after the run is uploaded
+- **CI friendly** — GitHub Actions gets `::error` annotations and a Step Summary automatically; upload failures only warn by default (`--bcode-strict` turns them into a hard gate); credentials live in env vars / CI secrets, never in the repo
 - **Zero deps, zero overhead** — pure Python standard library; without `--bcode` the plugin never touches your test run
 - **Offline catch-up** — `--bcode-dump` writes results to JSON; upload later with `bcode test --upload` once you are online
-- **CI friendly** — upload failures only warn by default (`--bcode-strict` turns them into a hard gate); credentials live in env vars / CI secrets, never in the repo
 
 ## Quick Start
 
@@ -70,15 +73,31 @@ Open the platform web UI under "Project → Tests → Test Runs" to see per-case
 How pytest tests correspond to platform test cases, by priority:
 
 1. **Explicit mapping**: `@pytest.mark.bytecode(case=123)` → links directly to platform case #123
-2. **Auto-sync** (`--bcode-sync`): looks up platform cases by `external_key` (the pytest nodeid) and creates one titled with the nodeid if absent; idempotent — reruns never duplicate
+2. **Auto-sync** (`--bcode-sync`): looks up platform cases by `external_key` (the pytest nodeid) — creates one when absent (title from the marker `title` or the docstring first line) and writes marker metadata back with PUT when present; idempotent, reruns never duplicate
 3. **Record-only** (default): `test_case_id=0`, the nodeid is still stored in `external_key` — history stays traceable and can be mapped later
 
 ```python
 import pytest
 
-@pytest.mark.bytecode(case=123)   # explicitly link to platform case #123
+@pytest.mark.bytecode(case=123)  # explicitly link to platform case #123
 def test_checkout():
     assert checkout() == "ok"
+
+@pytest.mark.bytecode(           # metadata lands with --bcode-sync; docstring is the title fallback
+    module="checkout", category="API automation", priority="P1",
+    pre="logged in", expected="returns ok",
+)
+def test_refund():
+    """Refund goes back through the original payment channel."""
+    assert refund() == "ok"
+
+@pytest.mark.bytecode(skip_report=True)          # never reported (bulk: --bcode-exclude)
+def test_smoke():
+    assert True
+
+@pytest.mark.bytecode(attach_on_fail=["a.png"])  # attached on fail/error
+def test_ui():
+    assert ui_ok()
 ```
 
 ## Status Mapping
@@ -92,6 +111,13 @@ def test_checkout():
 
 Failure and error tracebacks are attached to the case message (client truncates at 4000 chars, server caps at 8000). A teardown failure does not change the case verdict; a note is appended.
 
+## Idempotency, Retries and CI Integration
+
+- **Idempotency key**: every upload carries `sha256(git_sha + startedAt + hostname)` — network re-sends and retries hitting the same key return the existing run (response carries a `duplicate` flag), never a duplicate record
+- **Retries**: connection-level failures (refused/timeout) retry twice with exponential backoff; failures the server already accepted (including business rejections) are never retried, avoiding duplicated side effects
+- **GitHub Actions**: when `GITHUB_ACTIONS=true` is detected the plugin emits `::error` annotations for failed cases plus a `GITHUB_STEP_SUMMARY` table (pass rate / failure list / deep link to `/project/{id}/test-runs`)
+- **Failure attachments**: after the run is uploaded, attachments of failed/errored cases are attached to their platform case rows — files under `--bcode-screenshots` (default `screenshots/`) whose names start with the sanitized nodeid (`tests/test_a.py::test_x` → `tests_test_a.py__test_x*`), or files named by the marker `attach_on_fail`
+
 ## Configuration
 
 | Option | Env var | Description |
@@ -103,7 +129,9 @@ Failure and error tracebacks are attached to the case message (client truncates 
 | `--bcode-source` | — | Source label: pytest (default) / ci / junit / manual |
 | `--bcode-env` | `BCODE_ENV` | Environment label, default local |
 | `--bcode-branch` | — | Override git branch auto-detection |
-| `--bcode-sync` | — | Auto-create platform cases by nodeid for unmapped tests (off by default) |
+| `--bcode-sync` | — | Auto-create platform cases by nodeid for unmapped tests (off by default); marker metadata / docstring first lines are written on create and updated when the case exists |
+| `--bcode-exclude <pattern>` | — | fnmatch pattern to exclude cases from reporting (by nodeid, repeatable); per-case alternative: `@pytest.mark.bytecode(skip_report=True)` |
+| `--bcode-screenshots <dir>` | — | Screenshot directory for failed/errored cases (default `screenshots`): files prefixed with the sanitized nodeid are attached to the matching case row |
 | `--bcode-strict` | — | Non-zero pytest exit when upload fails (warn-only by default) |
 | `--bcode-dump <path>` | — | Offline mode: dump results to JSON instead of uploading (no url/key/project needed); catch up later with `bcode test --upload <path>` |
 

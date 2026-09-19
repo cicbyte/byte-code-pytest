@@ -29,6 +29,7 @@
 - [快速开始](#快速开始)
 - [用例映射（三层）](#用例映射三层)
 - [状态映射](#状态映射)
+- [幂等、重试与 CI 集成](#幂等重试与-ci-集成)
 - [配置](#配置)
 - [CI 示例（GitHub Actions）](#ci-示例github-actions)
 - [权限说明](#权限说明)
@@ -39,10 +40,12 @@
 ## 功能特性
 
 - **一键批量上报** — session 结束整批上报执行记录，逐用例状态、耗时与失败 traceback 直达平台 Web
-- **三层用例映射** — 显式 marker / 按 nodeid 自动同步 / 仅记录 external_key，历史可追溯、随时再映射
+- **三层用例映射 + 元数据富化** — 显式 marker / 按 nodeid 自动同步 / 仅记录 external_key；marker 元数据与 docstring 首行随 sync 落库并回写，测试代码是唯一事实源
+- **幂等与重试** — 上报携带幂等键，网络重发命中既有 run 不产生重复；连接未建立类失败自动退避重试
+- **失败附件回传** — 约定目录截图或 marker 指定文件，run 上报后自动挂到平台用例行
+- **CI 友好** — GitHub Actions 自动输出 `::error` 注解与 Step Summary 汇总表；上报失败默认仅告警（`--bcode-strict` 可硬卡）；凭据走环境变量/CI secret 不入库
 - **零依赖零开销** — 纯 Python 标准库；不加 `--bcode` 完全不介入测试流程
 - **离线补传** — `--bcode-dump` 结果落盘 JSON，联网后 `bcode test --upload` 补传
-- **CI 友好** — 上报失败默认仅告警不影响测试结论（`--bcode-strict` 可硬卡）；凭据走环境变量/CI secret 不入库
 
 ## 快速开始
 
@@ -69,15 +72,31 @@ session 结束自动批量上报，控制台输出：
 pytest 用例与平台测试用例的对应关系，按优先级：
 
 1. **显式映射**：`@pytest.mark.bytecode(case=123)` → 直接关联平台用例 #123
-2. **自动同步**（`--bcode-sync`）：按 `external_key`（pytest nodeid）查平台用例，不存在则以 nodeid 为标题自动创建；幂等，重跑不重复建
+2. **自动同步**（`--bcode-sync`）：按 `external_key`（pytest nodeid）查平台用例——不存在则自动创建（标题取 marker `title` 或 docstring 首行）；已存在且 marker 带元数据时回写更新（PUT）；幂等，重跑不重复建
 3. **仅记录**（默认）：`test_case_id=0`，nodeid 照记入 `external_key`——历史可追溯，随时可再映射
 
 ```python
 import pytest
 
-@pytest.mark.bytecode(case=123)   # 显式关联平台用例 #123
+@pytest.mark.bytecode(case=123)  # 显式关联平台用例 #123
 def test_checkout():
     assert checkout() == "ok"
+
+@pytest.mark.bytecode(           # 元数据随 --bcode-sync 落库并回写，docstring 首行兜底标题
+    module="交易", category="API 自动化", priority="P1",
+    pre="已登录", expected="返回 ok",
+)
+def test_refund():
+    """退款按原路退回。"""
+    assert refund() == "ok"
+
+@pytest.mark.bytecode(skip_report=True)          # 不上报（批量排除用 --bcode-exclude）
+def test_smoke():
+    assert True
+
+@pytest.mark.bytecode(attach_on_fail=["a.png"])  # 失败/错误时回传附件
+def test_ui():
+    assert ui_ok()
 ```
 
 ## 状态映射
@@ -91,6 +110,13 @@ def test_checkout():
 
 失败与错误的 traceback 附加在用例 message 上（客户端截断 4000 字符，服务端兜底 8000）。teardown 失败不改变用例结论，仅追加提示。
 
+## 幂等、重试与 CI 集成
+
+- **幂等键**：每次上报自动携带 `sha256(git_sha + startedAt + hostname)`——网络重发/重试命中同键时平台返回既有 run（响应带 `duplicate` 标记），不产生重复记录
+- **重试**：连接未建立类失败（拒连/超时）指数退避自动重试 2 次；服务端已受理的失败（含业务拒绝）不重试，避免重复副作用
+- **GitHub Actions**：检测到 `GITHUB_ACTIONS=true` 时自动输出——失败用例 `::error` 注解（PR 内联标红）+ `GITHUB_STEP_SUMMARY` 汇总表（通过率/失败清单/平台深链 `/project/{id}/test-runs`）
+- **失败附件回传**：run 上报后，把失败/错误用例的附件挂到平台用例行——`--bcode-screenshots` 目录（默认 `screenshots/`）内文件名以净化 nodeid 为前缀（`tests/test_a.py::test_x` → `tests_test_a.py__test_x*`）自动匹配，或 marker `attach_on_fail` 显式指定
+
 ## 配置
 
 | 参数 | 环境变量 | 说明 |
@@ -102,7 +128,9 @@ def test_checkout():
 | `--bcode-source` | — | 来源标识：pytest（默认）/ ci / junit / manual |
 | `--bcode-env` | `BCODE_ENV` | 环境标识，默认 local |
 | `--bcode-branch` | — | 覆盖 git 分支自动探测 |
-| `--bcode-sync` | — | 未映射用例按 nodeid 自动建平台用例（默认关闭） |
+| `--bcode-sync` | — | 未映射用例按 nodeid 自动建平台用例（默认关闭）；marker 元数据/docstring 首行随创建写入，已存在则回写更新 |
+| `--bcode-exclude <pattern>` | — | fnmatch 排除不上报的用例（按 nodeid，可重复）；单用例粒度用 `@pytest.mark.bytecode(skip_report=True)` |
+| `--bcode-screenshots <dir>` | — | 失败/错误用例截图目录（默认 `screenshots`）：文件名以净化 nodeid 为前缀即自动挂到对应用例行 |
 | `--bcode-strict` | — | 上报失败时 pytest 非零退出（默认仅告警） |
 | `--bcode-dump <path>` | — | 离线模式：结果落盘 JSON 而非直传（无需 url/key/project），后续 `bcode test --upload <path>` 补传 |
 
